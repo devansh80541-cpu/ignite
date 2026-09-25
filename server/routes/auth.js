@@ -19,7 +19,7 @@ router.post('/signup', async (req, res) => {
     const cleanEmail = email.trim().toLowerCase();
 
     // Check duplicate
-    const existing = db.prepare('SELECT id, username, email FROM users WHERE username = ? OR email = ?').get(cleanUsername, cleanEmail);
+    const existing = await db.prepare('SELECT id, username, email FROM users WHERE username = ? OR email = ?').get(cleanUsername, cleanEmail);
     if (existing) {
       if (existing.username === cleanUsername) {
         return res.status(400).json({ error: 'Username is already taken.' });
@@ -31,18 +31,18 @@ router.post('/signup', async (req, res) => {
     const userId = uuidv4();
     const avatar = `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUsername}`;
 
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO users (id, name, username, email, password_hash, phone, free_fire_uid, in_game_name, avatar, wallet_balance, pending_balance, role)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.00, 0.00, 'player')
     `).run(userId, name.trim(), cleanUsername, cleanEmail, password_hash, phone || '', free_fire_uid || '', in_game_name || cleanUsername, avatar);
 
     // Initial welcome notification
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
       VALUES (?, ?, ?, ?, 'system', 0, ?)
     `).run(uuidv4(), userId, 'Welcome to Ignite Esports! 🔥', 'Your account is ready. Add your Free Fire UID and enter your first tournament.', '/profile');
 
-    const newUser = db.prepare('SELECT id, name, username, email, phone, free_fire_uid, in_game_name, avatar, wallet_balance, pending_balance, role, total_earnings, total_wins, total_matches, total_kills, created_at FROM users WHERE id = ?').get(userId);
+    const newUser = await db.prepare('SELECT id, name, username, email, phone, free_fire_uid, in_game_name, avatar, wallet_balance, pending_balance, role, total_earnings, total_wins, total_matches, total_kills, created_at FROM users WHERE id = ?').get(userId);
     const token = generateToken(newUser);
 
     res.status(201).json({
@@ -66,7 +66,7 @@ router.post('/login', async (req, res) => {
     }
 
     const cleanIdentifier = identifier.trim().toLowerCase();
-    const user = db.prepare('SELECT * FROM users WHERE username = ? OR email = ?').get(cleanIdentifier, cleanIdentifier);
+    const user = await db.prepare('SELECT * FROM users WHERE username = ? OR email = ?').get(cleanIdentifier, cleanIdentifier);
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid login credentials.' });
@@ -105,7 +105,7 @@ router.post('/admin-login', async (req, res) => {
     }
 
     const cleanUsername = username.trim();
-    const adminUser = db.prepare("SELECT * FROM users WHERE username = ? AND role = 'admin'").get(cleanUsername);
+    const adminUser = await db.prepare("SELECT * FROM users WHERE username = ? AND role = 'admin'").get(cleanUsername);
 
     if (!adminUser) {
       return res.status(401).json({ error: 'Invalid administrator credentials.' });
@@ -117,7 +117,7 @@ router.post('/admin-login', async (req, res) => {
     }
 
     // Log admin login
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO admin_audit_logs (id, admin_id, admin_username, action, entity_type, entity_id, details_json, ip_address)
       VALUES (?, ?, ?, 'ADMIN_LOGIN', 'SESSION', ?, ?, ?)
     `).run(uuidv4(), adminUser.id, adminUser.username, adminUser.id, JSON.stringify({ time: new Date().toISOString() }), req.ip || '127.0.0.1');
@@ -149,7 +149,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
     const { name, phone, free_fire_uid, in_game_name, avatar } = req.body;
     const userId = req.user.id;
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE users
       SET name = COALESCE(?, name),
           phone = COALESCE(?, phone),
@@ -160,7 +160,7 @@ router.put('/profile', authenticateToken, async (req, res) => {
       WHERE id = ?
     `).run(name || null, phone || null, free_fire_uid || null, in_game_name || null, avatar || null, userId);
 
-    const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+    const updated = await db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
     const { password_hash, ...safeUser } = updated;
 
     res.json({ message: 'Profile updated successfully', user: safeUser });
@@ -191,14 +191,14 @@ router.post('/change-password', authenticateToken, async (req, res) => {
     }
 
     const newHash = await bcrypt.hash(newPassword, 10);
-    db.prepare(`
+    await db.prepare(`
       UPDATE users
       SET password_hash = ?, must_change_password = 0, updated_at = datetime('now')
       WHERE id = ?
     `).run(newHash, user.id);
 
     if (user.role === 'admin') {
-      db.prepare(`
+      await db.prepare(`
         INSERT INTO admin_audit_logs (id, admin_id, admin_username, action, entity_type, entity_id, details_json)
         VALUES (?, ?, ?, 'ADMIN_PASSWORD_CHANGED', 'USER', ?, ?)
       `).run(uuidv4(), user.id, user.username, user.id, JSON.stringify({ message: 'Admin updated their master password' }));

@@ -4,9 +4,9 @@ import db from '../db.js';
 const router = express.Router();
 
 // GET PUBLIC PLATFORM SETTINGS & LEGAL POLICIES
-router.get('/public', (req, res) => {
+router.get('/public', async (req, res) => {
   try {
-    const rows = db.prepare('SELECT key, value FROM platform_settings').all();
+    const rows = await db.prepare('SELECT key, value FROM platform_settings').all();
     const settings = {};
     rows.forEach(r => { settings[r.key] = r.value; });
 

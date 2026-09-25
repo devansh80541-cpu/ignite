@@ -9,9 +9,9 @@ const router = express.Router();
 router.use(requireAdmin);
 
 // HELPER: AUDIT LOGGER
-function logAdminAction(adminUser, action, entityType, entityId, details, req) {
+async function logAdminAction(adminUser, action, entityType, entityId, details, req) {
   try {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO admin_audit_logs (id, admin_id, admin_username, action, entity_type, entity_id, details_json, ip_address)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
@@ -30,51 +30,67 @@ function logAdminAction(adminUser, action, entityType, entityId, details, req) {
 }
 
 // 1. ADMIN DASHBOARD STATS & ANALYTICS
-router.get('/dashboard-stats', (req, res) => {
+router.get('/dashboard-stats', async (req, res) => {
   try {
-    const totalUsers = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'player'").get().count;
-    const activeUsers = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'player' AND is_banned = 0").get().count;
+    const totalUsersRes = await db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'player'").get();
+    const activeUsersRes = await db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'player' AND is_banned = 0").get();
 
-    const totalDeposits = db.prepare(`
+    const totalDepositsRes = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total
       FROM deposit_requests WHERE status = 'approved'
-    `).get().total;
+    `).get();
 
-    const pendingDepositsCount = db.prepare("SELECT COUNT(*) as count FROM deposit_requests WHERE status = 'pending'").get().count;
-    const pendingDepositsAmount = db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM deposit_requests WHERE status = 'pending'").get().total;
+    const pendingDepositsCountRes = await db.prepare("SELECT COUNT(*) as count FROM deposit_requests WHERE status = 'pending'").get();
+    const pendingDepositsAmountRes = await db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM deposit_requests WHERE status = 'pending'").get();
 
-    const totalCashouts = db.prepare(`
+    const totalCashoutsRes = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total
       FROM cashout_requests WHERE status = 'paid'
-    `).get().total;
+    `).get();
 
-    const pendingCashoutsCount = db.prepare("SELECT COUNT(*) as count FROM cashout_requests WHERE status = 'pending'").get().count;
-    const pendingCashoutsAmount = db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM cashout_requests WHERE status = 'pending'").get().total;
+    const pendingCashoutsCountRes = await db.prepare("SELECT COUNT(*) as count FROM cashout_requests WHERE status = 'pending'").get();
+    const pendingCashoutsAmountRes = await db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM cashout_requests WHERE status = 'pending'").get();
 
-    const activeTournaments = db.prepare("SELECT COUNT(*) as count FROM tournaments WHERE status IN ('open', 'live')").get().count;
-    const completedTournaments = db.prepare("SELECT COUNT(*) as count FROM tournaments WHERE status = 'completed'").get().count;
-    const totalPrizeMoney = db.prepare("SELECT COALESCE(SUM(prize_pool), 0) as total FROM tournaments WHERE status = 'completed'").get().total;
+    const activeTournamentsRes = await db.prepare("SELECT COUNT(*) as count FROM tournaments WHERE status IN ('open', 'live')").get();
+    const completedTournamentsRes = await db.prepare("SELECT COUNT(*) as count FROM tournaments WHERE status = 'completed'").get();
+    const totalPrizeMoneyRes = await db.prepare("SELECT COALESCE(SUM(prize_pool), 0) as total FROM tournaments WHERE status = 'completed'").get();
+
+    const totalUsers = parseInt(totalUsersRes?.count || 0);
+    const activeUsers = parseInt(activeUsersRes?.count || 0);
+    const totalDeposits = parseFloat(totalDepositsRes?.total || 0);
+    const pendingDepositsCount = parseInt(pendingDepositsCountRes?.count || 0);
+    const pendingDepositsAmount = parseFloat(pendingDepositsAmountRes?.total || 0);
+    const totalCashouts = parseFloat(totalCashoutsRes?.total || 0);
+    const pendingCashoutsCount = parseInt(pendingCashoutsCountRes?.count || 0);
+    const pendingCashoutsAmount = parseFloat(pendingCashoutsAmountRes?.total || 0);
+    const activeTournaments = parseInt(activeTournamentsRes?.count || 0);
+    const completedTournaments = parseInt(completedTournamentsRes?.count || 0);
+    const totalPrizeMoney = parseFloat(totalPrizeMoneyRes?.total || 0);
 
     // Platform Net Revenue Estimate: (Total Entry Fees Collected) - (Total Prizes Distributed) + Cashout Fees
-    const totalEntryFees = db.prepare(`
+    const totalEntryFeesRes = await db.prepare(`
       SELECT COALESCE(ABS(SUM(amount)), 0) as total
       FROM transactions WHERE type = 'tournament_entry' AND status = 'completed'
-    `).get().total;
+    `).get();
 
-    const totalPrizesGiven = db.prepare(`
+    const totalPrizesGivenRes = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total
       FROM transactions WHERE type = 'prize_credit' AND status = 'completed'
-    `).get().total;
+    `).get();
 
-    const cashoutFeesCollected = db.prepare(`
+    const cashoutFeesCollectedRes = await db.prepare(`
       SELECT COALESCE(SUM(fee_amount), 0) as total
       FROM cashout_requests WHERE status = 'paid'
-    `).get().total;
+    `).get();
+
+    const totalEntryFees = parseFloat(totalEntryFeesRes?.total || 0);
+    const totalPrizesGiven = parseFloat(totalPrizesGivenRes?.total || 0);
+    const cashoutFeesCollected = parseFloat(cashoutFeesCollectedRes?.total || 0);
 
     const platformRevenue = Math.max(0, (totalEntryFees - totalPrizesGiven) + cashoutFeesCollected);
 
     // Recent Audit Logs
-    const recentAudits = db.prepare('SELECT * FROM admin_audit_logs ORDER BY created_at DESC LIMIT 10').all();
+    const recentAudits = await db.prepare('SELECT * FROM admin_audit_logs ORDER BY created_at DESC LIMIT 10').all();
 
     // Chart Data: Last 7 Days Financial Flows
     const days = [];
@@ -83,29 +99,38 @@ router.get('/dashboard-stats', (req, res) => {
       days.push(d);
     }
 
+    const depositsList = [];
+    const cashoutsList = [];
+    const registrationsList = [];
+
+    for (const day of days) {
+      const dep = await db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM deposit_requests
+        WHERE status = 'approved' AND DATE(created_at) = ?
+      `).get(day);
+      depositsList.push(parseFloat(dep?.total || 0));
+
+      const cash = await db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) as total
+        FROM cashout_requests
+        WHERE status = 'paid' AND DATE(created_at) = ?
+      `).get(day);
+      cashoutsList.push(parseFloat(cash?.total || 0));
+
+      const reg = await db.prepare(`
+        SELECT COUNT(*) as count
+        FROM tournament_registrations
+        WHERE DATE(created_at) = ?
+      `).get(day);
+      registrationsList.push(parseInt(reg?.count || 0));
+    }
+
     const chartData = {
       labels: days.map(d => d.slice(5)), // MM-DD
-      deposits: days.map(day => {
-        return db.prepare(`
-          SELECT COALESCE(SUM(amount), 0) as total
-          FROM deposit_requests
-          WHERE status = 'approved' AND date(created_at) = ?
-        `).get(day).total;
-      }),
-      cashouts: days.map(day => {
-        return db.prepare(`
-          SELECT COALESCE(SUM(amount), 0) as total
-          FROM cashout_requests
-          WHERE status = 'paid' AND date(created_at) = ?
-        `).get(day).total;
-      }),
-      registrations: days.map(day => {
-        return db.prepare(`
-          SELECT COUNT(*) as count
-          FROM tournament_registrations
-          WHERE date(created_at) = ?
-        `).get(day).count;
-      })
+      deposits: depositsList,
+      cashouts: cashoutsList,
+      registrations: registrationsList
     };
 
     res.json({
@@ -133,7 +158,7 @@ router.get('/dashboard-stats', (req, res) => {
 });
 
 // 2. USER MANAGEMENT
-router.get('/users', (req, res) => {
+router.get('/users', async (req, res) => {
   try {
     const { search, status, limit = 50, offset = 0 } = req.query;
     let query = "SELECT id, name, username, email, phone, free_fire_uid, in_game_name, avatar, wallet_balance, pending_balance, role, is_banned, total_earnings, total_wins, total_matches, created_at FROM users WHERE role = 'player'";
@@ -153,8 +178,9 @@ router.get('/users', (req, res) => {
     query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
     params.push(parseInt(limit, 10), parseInt(offset, 10));
 
-    const users = db.prepare(query).all(...params);
-    const total = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'player'").get().count;
+    const users = await db.prepare(query).all(...params);
+    const totalRes = await db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'player'").get();
+    const total = parseInt(totalRes?.count || 0);
 
     res.json({ users, total });
   } catch (error) {
@@ -164,19 +190,19 @@ router.get('/users', (req, res) => {
 });
 
 // GET DETAILED USER PROFILE WITH ALL ASSOCIATED DATA
-router.get('/users/:id', (req, res) => {
+router.get('/users/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const user = db.prepare('SELECT id, name, username, email, phone, free_fire_uid, in_game_name, avatar, wallet_balance, pending_balance, role, is_banned, total_earnings, total_wins, total_matches, total_kills, created_at FROM users WHERE id = ?').get(id);
+    const user = await db.prepare('SELECT id, name, username, email, phone, free_fire_uid, in_game_name, avatar, wallet_balance, pending_balance, role, is_banned, total_earnings, total_wins, total_matches, total_kills, created_at FROM users WHERE id = ?').get(id);
 
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const transactions = db.prepare('SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20').all(id);
-    const deposits = db.prepare('SELECT * FROM deposit_requests WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').all(id);
-    const cashouts = db.prepare('SELECT * FROM cashout_requests WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').all(id);
-    const tournaments = db.prepare(`
+    const transactions = await db.prepare('SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20').all(id);
+    const deposits = await db.prepare('SELECT * FROM deposit_requests WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').all(id);
+    const cashouts = await db.prepare('SELECT * FROM cashout_requests WHERE user_id = ? ORDER BY created_at DESC LIMIT 10').all(id);
+    const tournaments = await db.prepare(`
       SELECT tr.*, t.name as tournament_name, t.mode, t.date, t.start_time
       FROM tournament_registrations tr
       JOIN tournaments t ON tr.tournament_id = t.id
@@ -192,15 +218,15 @@ router.get('/users/:id', (req, res) => {
 });
 
 // BAN / UNBAN USER
-router.put('/users/:id/status', (req, res) => {
+router.put('/users/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
     const { isBanned } = req.body;
     const banState = isBanned ? 1 : 0;
 
-    db.prepare("UPDATE users SET is_banned = ?, updated_at = datetime('now') WHERE id = ?").run(banState, id);
+    await db.prepare("UPDATE users SET is_banned = ?, updated_at = NOW() WHERE id = ?").run(banState, id);
 
-    logAdminAction(req.user, banState ? 'USER_BANNED' : 'USER_UNBANNED', 'USER', id, { isBanned: banState }, req);
+    await logAdminAction(req.user, banState ? 'USER_BANNED' : 'USER_UNBANNED', 'USER', id, { isBanned: banState }, req);
 
     res.json({ message: `User account has been ${banState ? 'suspended' : 'reactivated'}.` });
   } catch (error) {
@@ -210,7 +236,7 @@ router.put('/users/:id/status', (req, res) => {
 });
 
 // MANUAL WALLET BALANCE ADJUSTMENT (LEDGER-BACKED ONLY - NEVER SILENT MODIFICATION)
-router.post('/users/:id/adjust-balance', (req, res) => {
+router.post('/users/:id/adjust-balance', async (req, res) => {
   try {
     const { id } = req.params;
     const { amount, reason, referenceNote } = req.body;
@@ -224,8 +250,8 @@ router.post('/users/:id/adjust-balance', (req, res) => {
       return res.status(400).json({ error: 'A clear audit reason is required for manual balance adjustments.' });
     }
 
-    const adjustTx = db.transaction(() => {
-      const user = db.prepare('SELECT wallet_balance FROM users WHERE id = ?').get(id);
+    const adjustTx = db.transaction(async (txDb) => {
+      const user = await txDb.prepare('SELECT wallet_balance FROM users WHERE id = ?').get(id);
       if (!user) throw new Error('User not found');
 
       const balanceBefore = user.wallet_balance;
@@ -235,10 +261,10 @@ router.post('/users/:id/adjust-balance', (req, res) => {
         throw new Error(`Cannot adjust balance below zero. Current: ₹${balanceBefore.toFixed(2)}, Proposed: ₹${balanceAfter.toFixed(2)}`);
       }
 
-      db.prepare("UPDATE users SET wallet_balance = ?, updated_at = datetime('now') WHERE id = ?").run(balanceAfter, id);
+      await txDb.prepare("UPDATE users SET wallet_balance = ?, updated_at = NOW() WHERE id = ?").run(balanceAfter, id);
 
       const txId = `tx-adj-${uuidv4().substring(0, 8)}`;
-      db.prepare(`
+      await txDb.prepare(`
         INSERT INTO transactions (id, user_id, type, amount, balance_before, balance_after, reference_id, status, description, admin_id)
         VALUES (?, ?, 'admin_adjustment', ?, ?, ?, ?, 'completed', ?, ?)
       `).run(
@@ -253,7 +279,7 @@ router.post('/users/:id/adjust-balance', (req, res) => {
       );
 
       // Notify User
-      db.prepare(`
+      await txDb.prepare(`
         INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
         VALUES (?, ?, ?, ?, 'system', 0, '/wallet')
       `).run(
@@ -266,9 +292,9 @@ router.post('/users/:id/adjust-balance', (req, res) => {
       return { balanceBefore, balanceAfter, txId };
     });
 
-    const result = adjustTx();
+    const result = await adjustTx();
 
-    logAdminAction(req.user, 'MANUAL_BALANCE_ADJUSTMENT', 'WALLET', id, {
+    await logAdminAction(req.user, 'MANUAL_BALANCE_ADJUSTMENT', 'WALLET', id, {
       amount: numAmount,
       balanceBefore: result.balanceBefore,
       balanceAfter: result.balanceAfter,
@@ -288,7 +314,7 @@ router.post('/users/:id/adjust-balance', (req, res) => {
 });
 
 // 3. DEPOSIT REQUESTS MANAGEMENT
-router.get('/deposits', (req, res) => {
+router.get('/deposits', async (req, res) => {
   try {
     const { status } = req.query;
     let query = `
@@ -306,7 +332,7 @@ router.get('/deposits', (req, res) => {
 
     query += " ORDER BY CASE dr.status WHEN 'pending' THEN 1 ELSE 2 END, dr.created_at DESC";
 
-    const deposits = db.prepare(query).all(...params);
+    const deposits = await db.prepare(query).all(...params);
     res.json({ deposits });
   } catch (error) {
     console.error('Admin deposits fetch error:', error);
@@ -315,31 +341,31 @@ router.get('/deposits', (req, res) => {
 });
 
 // APPROVE DEPOSIT (CREDIT WALLET & WRITE TRANSACTION LEDGER)
-router.post('/deposits/:id/approve', (req, res) => {
+router.post('/deposits/:id/approve', async (req, res) => {
   try {
     const { id } = req.params;
 
-    const approveTx = db.transaction(() => {
-      const deposit = db.prepare('SELECT * FROM deposit_requests WHERE id = ?').get(id);
+    const approveTx = db.transaction(async (txDb) => {
+      const deposit = await txDb.prepare('SELECT * FROM deposit_requests WHERE id = ?').get(id);
       if (!deposit) throw new Error('Deposit request not found');
 
       if (deposit.status !== 'pending') {
         throw new Error(`This deposit request has already been ${deposit.status.toUpperCase()}`);
       }
 
-      const user = db.prepare('SELECT wallet_balance FROM users WHERE id = ?').get(deposit.user_id);
+      const user = await txDb.prepare('SELECT wallet_balance FROM users WHERE id = ?').get(deposit.user_id);
       if (!user) throw new Error('User account not found');
 
       const balanceBefore = user.wallet_balance;
       const balanceAfter = balanceBefore + deposit.amount;
 
       // 1. Credit wallet
-      db.prepare("UPDATE users SET wallet_balance = ?, updated_at = datetime('now') WHERE id = ?")
+      await txDb.prepare("UPDATE users SET wallet_balance = ?, updated_at = NOW() WHERE id = ?")
         .run(balanceAfter, deposit.user_id);
 
       // 2. Insert immutable transaction ledger
       const txId = `tx-dep-${uuidv4().substring(0, 8)}`;
-      db.prepare(`
+      await txDb.prepare(`
         INSERT INTO transactions (id, user_id, type, amount, balance_before, balance_after, reference_id, status, description, admin_id)
         VALUES (?, ?, 'deposit', ?, ?, ?, ?, 'completed', ?, ?)
       `).run(
@@ -354,14 +380,14 @@ router.post('/deposits/:id/approve', (req, res) => {
       );
 
       // 3. Update deposit request status
-      db.prepare(`
+      await txDb.prepare(`
         UPDATE deposit_requests
-        SET status = 'approved', reviewed_by = ?, reviewed_at = datetime('now')
+        SET status = 'approved', reviewed_by = ?, reviewed_at = NOW()
         WHERE id = ?
       `).run(req.user.username, id);
 
       // 4. Send notification to player
-      db.prepare(`
+      await txDb.prepare(`
         INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
         VALUES (?, ?, ?, ?, 'deposit', 0, '/wallet')
       `).run(
@@ -374,9 +400,9 @@ router.post('/deposits/:id/approve', (req, res) => {
       return { deposit, balanceAfter };
     });
 
-    const result = approveTx();
+    const result = await approveTx();
 
-    logAdminAction(req.user, 'DEPOSIT_APPROVED', 'DEPOSIT', id, {
+    await logAdminAction(req.user, 'DEPOSIT_APPROVED', 'DEPOSIT', id, {
       amount: result.deposit.amount,
       utr: result.deposit.transaction_id,
       userId: result.deposit.user_id
@@ -390,7 +416,7 @@ router.post('/deposits/:id/approve', (req, res) => {
 });
 
 // REJECT DEPOSIT
-router.post('/deposits/:id/reject', (req, res) => {
+router.post('/deposits/:id/reject', async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
@@ -399,21 +425,21 @@ router.post('/deposits/:id/reject', (req, res) => {
       return res.status(400).json({ error: 'Please provide a reason for rejecting the deposit.' });
     }
 
-    const deposit = db.prepare('SELECT * FROM deposit_requests WHERE id = ?').get(id);
+    const deposit = await db.prepare('SELECT * FROM deposit_requests WHERE id = ?').get(id);
     if (!deposit) return res.status(404).json({ error: 'Deposit request not found' });
 
     if (deposit.status !== 'pending') {
       return res.status(400).json({ error: `This deposit request has already been ${deposit.status.toUpperCase()}` });
     }
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE deposit_requests
-      SET status = 'rejected', rejection_reason = ?, reviewed_by = ?, reviewed_at = datetime('now')
+      SET status = 'rejected', rejection_reason = ?, reviewed_by = ?, reviewed_at = NOW()
       WHERE id = ?
     `).run(reason.trim(), req.user.username, id);
 
     // Notify player
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
       VALUES (?, ?, ?, ?, 'deposit', 0, '/wallet')
     `).run(
@@ -423,7 +449,7 @@ router.post('/deposits/:id/reject', (req, res) => {
       `Your deposit request for ₹${deposit.amount.toFixed(2)} (UTR: ${deposit.transaction_id}) was rejected. Reason: ${reason.trim()}`
     );
 
-    logAdminAction(req.user, 'DEPOSIT_REJECTED', 'DEPOSIT', id, {
+    await logAdminAction(req.user, 'DEPOSIT_REJECTED', 'DEPOSIT', id, {
       amount: deposit.amount,
       utr: deposit.transaction_id,
       reason: reason.trim()
@@ -437,7 +463,7 @@ router.post('/deposits/:id/reject', (req, res) => {
 });
 
 // 4. CASHOUT REQUESTS MANAGEMENT
-router.get('/cashouts', (req, res) => {
+router.get('/cashouts', async (req, res) => {
   try {
     const { status } = req.query;
     let query = `
@@ -455,7 +481,7 @@ router.get('/cashouts', (req, res) => {
 
     query += " ORDER BY CASE cr.status WHEN 'pending' THEN 1 WHEN 'processing' THEN 2 ELSE 3 END, cr.created_at DESC";
 
-    const cashouts = db.prepare(query).all(...params);
+    const cashouts = await db.prepare(query).all(...params);
     res.json({ cashouts });
   } catch (error) {
     console.error('Admin cashouts error:', error);
@@ -464,10 +490,10 @@ router.get('/cashouts', (req, res) => {
 });
 
 // MARK CASHOUT AS PROCESSING
-router.post('/cashouts/:id/process', (req, res) => {
+router.post('/cashouts/:id/process', async (req, res) => {
   try {
     const { id } = req.params;
-    db.prepare("UPDATE cashout_requests SET status = 'processing', reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ? AND status = 'pending'").run(req.user.username, id);
+    await db.prepare("UPDATE cashout_requests SET status = 'processing', reviewed_by = ?, reviewed_at = NOW() WHERE id = ? AND status = 'pending'").run(req.user.username, id);
     res.json({ message: 'Cashout request marked as Processing' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update cashout status' });
@@ -475,30 +501,30 @@ router.post('/cashouts/:id/process', (req, res) => {
 });
 
 // MARK CASHOUT AS PAID (PERMANENT DEDUCTION & COMPLETE LEDGER TRANSACTION)
-router.post('/cashouts/:id/mark-paid', (req, res) => {
+router.post('/cashouts/:id/mark-paid', async (req, res) => {
   try {
     const { id } = req.params;
     const { transactionReference, adminNote } = req.body;
 
-    const payTx = db.transaction(() => {
-      const cashout = db.prepare('SELECT * FROM cashout_requests WHERE id = ?').get(id);
+    const payTx = db.transaction(async (txDb) => {
+      const cashout = await txDb.prepare('SELECT * FROM cashout_requests WHERE id = ?').get(id);
       if (!cashout) throw new Error('Cashout request not found');
 
       if (cashout.status === 'paid' || cashout.status === 'rejected') {
         throw new Error(`This cashout is already ${cashout.status.toUpperCase()}`);
       }
 
-      const user = db.prepare('SELECT wallet_balance, pending_balance FROM users WHERE id = ?').get(cashout.user_id);
+      const user = await txDb.prepare('SELECT wallet_balance, pending_balance FROM users WHERE id = ?').get(cashout.user_id);
       if (!user) throw new Error('User not found');
 
       // Deduct from pending_balance permanently
       const newPending = Math.max(0, (user.pending_balance || 0) - cashout.amount);
-      db.prepare("UPDATE users SET pending_balance = ?, updated_at = datetime('now') WHERE id = ?")
+      await txDb.prepare("UPDATE users SET pending_balance = ?, updated_at = NOW() WHERE id = ?")
         .run(newPending, cashout.user_id);
 
       // Insert transaction ledger record
       const txId = `tx-cash-${uuidv4().substring(0, 8)}`;
-      db.prepare(`
+      await txDb.prepare(`
         INSERT INTO transactions (id, user_id, type, amount, balance_before, balance_after, reference_id, status, description, admin_id)
         VALUES (?, ?, 'cashout', ?, ?, ?, ?, 'completed', ?, ?)
       `).run(
@@ -513,14 +539,14 @@ router.post('/cashouts/:id/mark-paid', (req, res) => {
       );
 
       // Update cashout request
-      db.prepare(`
+      await txDb.prepare(`
         UPDATE cashout_requests
-        SET status = 'paid', transaction_reference = ?, admin_note = ?, reviewed_by = ?, reviewed_at = datetime('now')
+        SET status = 'paid', transaction_reference = ?, admin_note = ?, reviewed_by = ?, reviewed_at = NOW()
         WHERE id = ?
       `).run(transactionReference || 'PAID_MANUAL', adminNote || null, req.user.username, id);
 
       // Notify player
-      db.prepare(`
+      await txDb.prepare(`
         INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
         VALUES (?, ?, ?, ?, 'cashout', 0, '/wallet')
       `).run(
@@ -533,9 +559,9 @@ router.post('/cashouts/:id/mark-paid', (req, res) => {
       return cashout;
     });
 
-    const result = payTx();
+    const result = await payTx();
 
-    logAdminAction(req.user, 'CASHOUT_PAID', 'CASHOUT', id, {
+    await logAdminAction(req.user, 'CASHOUT_PAID', 'CASHOUT', id, {
       amount: result.amount,
       netAmount: result.netAmount,
       payoutTo: result.payout_identifier,
@@ -550,7 +576,7 @@ router.post('/cashouts/:id/mark-paid', (req, res) => {
 });
 
 // REJECT CASHOUT (UNLOCK RESERVED FUNDS BACK TO USER'S AVAILABLE BALANCE)
-router.post('/cashouts/:id/reject', (req, res) => {
+router.post('/cashouts/:id/reject', async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
@@ -559,32 +585,32 @@ router.post('/cashouts/:id/reject', (req, res) => {
       return res.status(400).json({ error: 'Please provide a reason for rejecting the cashout request.' });
     }
 
-    const rejectCashTx = db.transaction(() => {
-      const cashout = db.prepare('SELECT * FROM cashout_requests WHERE id = ?').get(id);
+    const rejectCashTx = db.transaction(async (txDb) => {
+      const cashout = await txDb.prepare('SELECT * FROM cashout_requests WHERE id = ?').get(id);
       if (!cashout) throw new Error('Cashout request not found');
 
       if (cashout.status === 'paid' || cashout.status === 'rejected') {
         throw new Error(`This cashout is already ${cashout.status.toUpperCase()}`);
       }
 
-      const user = db.prepare('SELECT wallet_balance, pending_balance FROM users WHERE id = ?').get(cashout.user_id);
+      const user = await txDb.prepare('SELECT wallet_balance, pending_balance FROM users WHERE id = ?').get(cashout.user_id);
       if (!user) throw new Error('User not found');
 
       // Revert funds: release from pending_balance back to wallet_balance
       const newAvailable = user.wallet_balance + cashout.amount;
       const newPending = Math.max(0, (user.pending_balance || 0) - cashout.amount);
 
-      db.prepare("UPDATE users SET wallet_balance = ?, pending_balance = ?, updated_at = datetime('now') WHERE id = ?")
+      await txDb.prepare("UPDATE users SET wallet_balance = ?, pending_balance = ?, updated_at = NOW() WHERE id = ?")
         .run(newAvailable, newPending, cashout.user_id);
 
-      db.prepare(`
+      await txDb.prepare(`
         UPDATE cashout_requests
-        SET status = 'rejected', admin_note = ?, reviewed_by = ?, reviewed_at = datetime('now')
+        SET status = 'rejected', admin_note = ?, reviewed_by = ?, reviewed_at = NOW()
         WHERE id = ?
       `).run(reason.trim(), req.user.username, id);
 
       // Notify player
-      db.prepare(`
+      await txDb.prepare(`
         INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
         VALUES (?, ?, ?, ?, 'cashout', 0, '/wallet')
       `).run(
@@ -597,9 +623,9 @@ router.post('/cashouts/:id/reject', (req, res) => {
       return { cashout, newAvailable };
     });
 
-    const result = rejectCashTx();
+    const result = await rejectCashTx();
 
-    logAdminAction(req.user, 'CASHOUT_REJECTED', 'CASHOUT', id, {
+    await logAdminAction(req.user, 'CASHOUT_REJECTED', 'CASHOUT', id, {
       amount: result.cashout.amount,
       reason: reason.trim()
     }, req);
@@ -612,7 +638,7 @@ router.post('/cashouts/:id/reject', (req, res) => {
 });
 
 // 5. TOURNAMENT MANAGEMENT (CREATE / EDIT / CANCEL / DELETE)
-router.post('/tournaments', (req, res) => {
+router.post('/tournaments', async (req, res) => {
   try {
     const {
       name, mode, team_size, entry_fee, prize_pool, first_prize, second_prize, third_prize, kill_bounty,
@@ -631,7 +657,7 @@ router.post('/tournaments', (req, res) => {
       ? JSON.stringify({ 1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1, kill: 1 })
       : JSON.stringify({ win: 10, kill: 1 });
 
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO tournaments (
         id, name, mode, team_size, entry_fee, prize_pool, first_prize, second_prize, third_prize, kill_bounty,
         max_slots, filled_slots, date, start_time, registration_deadline, map, rules, scoring_rules,
@@ -666,7 +692,7 @@ router.post('/tournaments', (req, res) => {
       banner_img || 'https://images.unsplash.com/photo-1542751371-adc38448a05e?w=800&auto=format&fit=crop&q=80'
     );
 
-    logAdminAction(req.user, 'TOURNAMENT_CREATED', 'TOURNAMENT', id, { name, mode, entry_fee, prize_pool }, req);
+    await logAdminAction(req.user, 'TOURNAMENT_CREATED', 'TOURNAMENT', id, { name, mode, entry_fee, prize_pool }, req);
 
     res.status(201).json({ message: 'Tournament created successfully!', id });
   } catch (error) {
@@ -676,7 +702,7 @@ router.post('/tournaments', (req, res) => {
 });
 
 // UPDATE TOURNAMENT
-router.put('/tournaments/:id', (req, res) => {
+router.put('/tournaments/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const {
@@ -685,10 +711,10 @@ router.put('/tournaments/:id', (req, res) => {
       room_release_time, is_room_released, status, banner_img
     } = req.body;
 
-    const existing = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id);
+    const existing = await db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id);
     if (!existing) return res.status(404).json({ error: 'Tournament not found' });
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE tournaments SET
         name = COALESCE(?, name),
         mode = COALESCE(?, mode),
@@ -712,7 +738,7 @@ router.put('/tournaments/:id', (req, res) => {
         is_room_released = COALESCE(?, is_room_released),
         status = COALESCE(?, status),
         banner_img = COALESCE(?, banner_img),
-        updated_at = datetime('now')
+        updated_at = NOW()
       WHERE id = ?
     `).run(
       name, mode, team_size, entry_fee, prize_pool, first_prize, second_prize, third_prize, kill_bounty,
@@ -722,7 +748,7 @@ router.put('/tournaments/:id', (req, res) => {
       status, banner_img, id
     );
 
-    logAdminAction(req.user, 'TOURNAMENT_UPDATED', 'TOURNAMENT', id, { name, status }, req);
+    await logAdminAction(req.user, 'TOURNAMENT_UPDATED', 'TOURNAMENT', id, { name, status }, req);
 
     res.json({ message: 'Tournament updated successfully!' });
   } catch (error) {
@@ -732,12 +758,12 @@ router.put('/tournaments/:id', (req, res) => {
 });
 
 // RELEASE ROOM ID & PASSWORD (INSTANT BROADCAST TO JOINED PLAYERS)
-router.post('/tournaments/:id/release-room', (req, res) => {
+router.post('/tournaments/:id/release-room', async (req, res) => {
   try {
     const { id } = req.params;
     const { roomId, roomPassword } = req.body;
 
-    const tournament = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id);
+    const tournament = await db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id);
     if (!tournament) return res.status(404).json({ error: 'Tournament not found' });
 
     const finalRoomId = roomId || tournament.room_id;
@@ -747,22 +773,20 @@ router.post('/tournaments/:id/release-room', (req, res) => {
       return res.status(400).json({ error: 'Please enter a valid Room ID and Room Password before releasing.' });
     }
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE tournaments
-      SET room_id = ?, room_password = ?, is_room_released = 1, updated_at = datetime('now')
+      SET room_id = ?, room_password = ?, is_room_released = 1, updated_at = NOW()
       WHERE id = ?
     `).run(finalRoomId, finalRoomPass, id);
 
     // Get all registered players and send push notification
-    const participants = db.prepare("SELECT user_id, player_ign FROM tournament_registrations WHERE tournament_id = ? AND status = 'registered'").all(id);
-
-    const insertNotif = db.prepare(`
-      INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
-      VALUES (?, ?, ?, ?, 'match', 0, ?)
-    `);
+    const participants = await db.prepare("SELECT user_id, player_ign FROM tournament_registrations WHERE tournament_id = ? AND status = 'registered'").all(id);
 
     for (const p of participants) {
-      insertNotif.run(
+      await db.prepare(`
+        INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
+        VALUES (?, ?, ?, ?, 'match', 0, ?)
+      `).run(
         uuidv4(),
         p.user_id,
         '🚨 Room ID & Password Released!',
@@ -771,7 +795,7 @@ router.post('/tournaments/:id/release-room', (req, res) => {
       );
     }
 
-    logAdminAction(req.user, 'ROOM_CREDENTIALS_RELEASED', 'TOURNAMENT', id, { roomId: finalRoomId, participantCount: participants.length }, req);
+    await logAdminAction(req.user, 'ROOM_CREDENTIALS_RELEASED', 'TOURNAMENT', id, { roomId: finalRoomId, participantCount: participants.length }, req);
 
     res.json({
       message: `Room credentials released! ${participants.length} registered players have been notified.`,
@@ -785,13 +809,13 @@ router.post('/tournaments/:id/release-room', (req, res) => {
 });
 
 // CANCEL TOURNAMENT & AUTOMATICALLY REFUND ALL PARTICIPANTS
-router.post('/tournaments/:id/cancel-refund', (req, res) => {
+router.post('/tournaments/:id/cancel-refund', async (req, res) => {
   try {
     const { id } = req.params;
     const { reason } = req.body;
 
-    const cancelTx = db.transaction(() => {
-      const tournament = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id);
+    const cancelTx = db.transaction(async (txDb) => {
+      const tournament = await txDb.prepare('SELECT * FROM tournaments WHERE id = ?').get(id);
       if (!tournament) throw new Error('Tournament not found');
 
       if (tournament.status === 'cancelled') {
@@ -799,23 +823,23 @@ router.post('/tournaments/:id/cancel-refund', (req, res) => {
       }
 
       // Mark tournament cancelled
-      db.prepare("UPDATE tournaments SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?").run(id);
+      await txDb.prepare("UPDATE tournaments SET status = 'cancelled', updated_at = NOW() WHERE id = ?").run(id);
 
       // Refund all registered players
-      const registrations = db.prepare("SELECT * FROM tournament_registrations WHERE tournament_id = ? AND status = 'registered'").all(id);
+      const registrations = await txDb.prepare("SELECT * FROM tournament_registrations WHERE tournament_id = ? AND status = 'registered'").all(id);
       let refundCount = 0;
 
       for (const reg of registrations) {
         const fee = reg.entry_fee_paid || 0;
         if (fee > 0) {
-          const user = db.prepare('SELECT wallet_balance FROM users WHERE id = ?').get(reg.user_id);
+          const user = await txDb.prepare('SELECT wallet_balance FROM users WHERE id = ?').get(reg.user_id);
           if (user) {
             const balanceBefore = user.wallet_balance;
             const balanceAfter = balanceBefore + fee;
 
-            db.prepare("UPDATE users SET wallet_balance = ?, updated_at = datetime('now') WHERE id = ?").run(balanceAfter, reg.user_id);
+            await txDb.prepare("UPDATE users SET wallet_balance = ?, updated_at = NOW() WHERE id = ?").run(balanceAfter, reg.user_id);
 
-            db.prepare(`
+            await txDb.prepare(`
               INSERT INTO transactions (id, user_id, type, amount, balance_before, balance_after, reference_id, status, description, admin_id)
               VALUES (?, ?, 'refund', ?, ?, ?, ?, 'completed', ?, ?)
             `).run(
@@ -831,9 +855,9 @@ router.post('/tournaments/:id/cancel-refund', (req, res) => {
           }
         }
 
-        db.prepare("UPDATE tournament_registrations SET status = 'refunded' WHERE id = ?").run(reg.id);
+        await txDb.prepare("UPDATE tournament_registrations SET status = 'refunded' WHERE id = ?").run(reg.id);
 
-        db.prepare(`
+        await txDb.prepare(`
           INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
           VALUES (?, ?, ?, ?, 'tournament', 0, '/wallet')
         `).run(
@@ -849,9 +873,9 @@ router.post('/tournaments/:id/cancel-refund', (req, res) => {
       return { tournament, refundCount };
     });
 
-    const result = cancelTx();
+    const result = await cancelTx();
 
-    logAdminAction(req.user, 'TOURNAMENT_CANCELLED_REFUNDED', 'TOURNAMENT', id, {
+    await logAdminAction(req.user, 'TOURNAMENT_CANCELLED_REFUNDED', 'TOURNAMENT', id, {
       refundedPlayersCount: result.refundCount,
       reason
     }, req);
@@ -864,11 +888,11 @@ router.post('/tournaments/:id/cancel-refund', (req, res) => {
 });
 
 // DELETE TOURNAMENT
-router.delete('/tournaments/:id', (req, res) => {
+router.delete('/tournaments/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    db.prepare('DELETE FROM tournaments WHERE id = ?').run(id);
-    logAdminAction(req.user, 'TOURNAMENT_DELETED', 'TOURNAMENT', id, {}, req);
+    await db.prepare('DELETE FROM tournaments WHERE id = ?').run(id);
+    await logAdminAction(req.user, 'TOURNAMENT_DELETED', 'TOURNAMENT', id, {}, req);
     res.json({ message: 'Tournament deleted' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to delete tournament' });
@@ -876,7 +900,7 @@ router.delete('/tournaments/:id', (req, res) => {
 });
 
 // 6. RESULTS & PRIZE DISTRIBUTION ENGINE
-router.post('/tournaments/:id/results', (req, res) => {
+router.post('/tournaments/:id/results', async (req, res) => {
   try {
     const { id } = req.params;
     const { results, isFinalizeAndPayout } = req.body; // Array of { userId, playerName, ffUid, position, kills, prizeAmount }
@@ -885,23 +909,16 @@ router.post('/tournaments/:id/results', (req, res) => {
       return res.status(400).json({ error: 'Please provide match results array.' });
     }
 
-    const resultsTx = db.transaction(() => {
-      const tournament = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id);
+    const resultsTx = db.transaction(async (txDb) => {
+      const tournament = await txDb.prepare('SELECT * FROM tournaments WHERE id = ?').get(id);
       if (!tournament) throw new Error('Tournament not found');
 
       // Delete prior temporary results for this tournament
-      db.prepare('DELETE FROM match_results WHERE tournament_id = ?').run(id);
+      await txDb.prepare('DELETE FROM match_results WHERE tournament_id = ?').run(id);
 
       const scoring = tournament.scoring_rules ? JSON.parse(tournament.scoring_rules) : {};
       const rankPtsTable = scoring.rankPoints || scoring || { 1: 12, 2: 9, 3: 8, 4: 7, 5: 6, 6: 5, 7: 4, 8: 3, 9: 2, 10: 1 };
       const killPointVal = scoring.killPoints || scoring.kill || 1;
-
-      const insertRes = db.prepare(`
-        INSERT INTO match_results (
-          id, tournament_id, user_id, player_name, player_ff_uid, position, kills,
-          placement_points, kill_points, total_points, prize_amount, is_prize_credited
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
 
       for (const row of results) {
         const pos = parseInt(row.position, 10) || 0;
@@ -913,7 +930,12 @@ router.post('/tournaments/:id/results', (req, res) => {
 
         const isCredited = isFinalizeAndPayout ? 1 : 0;
 
-        insertRes.run(
+        await txDb.prepare(`
+          INSERT INTO match_results (
+            id, tournament_id, user_id, player_name, player_ff_uid, position, kills,
+            placement_points, kill_points, total_points, prize_amount, is_prize_credited
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
           uuidv4(),
           id,
           row.userId || null,
@@ -930,27 +952,27 @@ router.post('/tournaments/:id/results', (req, res) => {
 
         // Update player career kills & stats if registered user
         if (row.userId && !row.userId.startsWith('bot-')) {
-          db.prepare('UPDATE users SET total_kills = total_kills + ? WHERE id = ?').run(kills, row.userId);
+          await txDb.prepare('UPDATE users SET total_kills = total_kills + ? WHERE id = ?').run(kills, row.userId);
 
           // If final payout is checked, credit wallet & career earnings
           if (isFinalizeAndPayout && prize > 0) {
-            const user = db.prepare('SELECT wallet_balance, total_earnings, total_wins FROM users WHERE id = ?').get(row.userId);
+            const user = await txDb.prepare('SELECT wallet_balance, total_earnings, total_wins FROM users WHERE id = ?').get(row.userId);
             if (user) {
               const balanceBefore = user.wallet_balance;
               const balanceAfter = balanceBefore + prize;
               const isWin = pos === 1 ? 1 : 0;
 
-              db.prepare(`
+              await txDb.prepare(`
                 UPDATE users
                 SET wallet_balance = ?,
                     total_earnings = total_earnings + ?,
                     total_wins = total_wins + ?,
-                    updated_at = datetime('now')
+                    updated_at = NOW()
                 WHERE id = ?
               `).run(balanceAfter, prize, isWin, row.userId);
 
               // Immutable Ledger
-              db.prepare(`
+              await txDb.prepare(`
                 INSERT INTO transactions (id, user_id, type, amount, balance_before, balance_after, reference_id, status, description, admin_id)
                 VALUES (?, ?, 'prize_credit', ?, ?, ?, ?, 'completed', ?, ?)
               `).run(
@@ -965,7 +987,7 @@ router.post('/tournaments/:id/results', (req, res) => {
               );
 
               // Notify winner
-              db.prepare(`
+              await txDb.prepare(`
                 INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
                 VALUES (?, ?, ?, ?, 'prize', 0, '/wallet')
               `).run(
@@ -980,15 +1002,15 @@ router.post('/tournaments/:id/results', (req, res) => {
       }
 
       if (isFinalizeAndPayout) {
-        db.prepare("UPDATE tournaments SET status = 'completed', updated_at = datetime('now') WHERE id = ?").run(id);
+        await txDb.prepare("UPDATE tournaments SET status = 'completed', updated_at = NOW() WHERE id = ?").run(id);
       }
 
       return { isFinalizeAndPayout, resultsCount: results.length };
     });
 
-    const output = resultsTx();
+    const output = await resultsTx();
 
-    logAdminAction(req.user, output.isFinalizeAndPayout ? 'RESULTS_FINALIZED_PRIZES_PAID' : 'RESULTS_SAVED_DRAFT', 'TOURNAMENT', id, { count: output.resultsCount }, req);
+    await logAdminAction(req.user, output.isFinalizeAndPayout ? 'RESULTS_FINALIZED_PRIZES_PAID' : 'RESULTS_SAVED_DRAFT', 'TOURNAMENT', id, { count: output.resultsCount }, req);
 
     res.json({
       message: output.isFinalizeAndPayout
@@ -1002,7 +1024,7 @@ router.post('/tournaments/:id/results', (req, res) => {
 });
 
 // 7. ALL TRANSACTIONS INSPECTOR
-router.get('/transactions', (req, res) => {
+router.get('/transactions', async (req, res) => {
   try {
     const { type, search, limit = 50, offset = 0 } = req.query;
     let query = `
@@ -1026,8 +1048,9 @@ router.get('/transactions', (req, res) => {
     query += ' ORDER BY t.created_at DESC LIMIT ? OFFSET ?';
     params.push(parseInt(limit, 10), parseInt(offset, 10));
 
-    const transactions = db.prepare(query).all(...params);
-    const total = db.prepare('SELECT COUNT(*) as count FROM transactions').get().count;
+    const transactions = await db.prepare(query).all(...params);
+    const totalRes = await db.prepare('SELECT COUNT(*) as count FROM transactions').get();
+    const total = parseInt(totalRes?.count || 0);
 
     res.json({ transactions, total });
   } catch (error) {
@@ -1037,9 +1060,9 @@ router.get('/transactions', (req, res) => {
 });
 
 // 8. SUPPORT TICKETS MANAGEMENT
-router.get('/support-tickets', (req, res) => {
+router.get('/support-tickets', async (req, res) => {
   try {
-    const tickets = db.prepare(`
+    const tickets = await db.prepare(`
       SELECT st.*, u.name as user_name, u.username, u.email, u.phone
       FROM support_tickets st
       JOIN users u ON st.user_id = u.id
@@ -1052,22 +1075,23 @@ router.get('/support-tickets', (req, res) => {
   }
 });
 
-router.post('/support-tickets/:id/reply', (req, res) => {
+router.post('/support-tickets/:id/reply', async (req, res) => {
   try {
     const { id } = req.params;
     const { reply, status } = req.body;
 
-    const ticket = db.prepare('SELECT * FROM support_tickets WHERE id = ?').get(id);
+    const ticket = await db.prepare('SELECT * FROM support_tickets WHERE id = ?').get(id);
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
 
-    db.prepare(`
+    const resolvedClause = status === 'resolved' ? 'NOW()' : 'resolved_at';
+    await db.prepare(`
       UPDATE support_tickets
-      SET admin_reply = ?, status = ?, resolved_at = ${status === 'resolved' ? "datetime('now')" : "resolved_at"}
+      SET admin_reply = ?, status = ?, resolved_at = ${resolvedClause}
       WHERE id = ?
     `).run(reply || ticket.admin_reply, status || ticket.status, id);
 
     // Notify user
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
       VALUES (?, ?, ?, ?, 'system', 0, '/support')
     `).run(
@@ -1084,9 +1108,9 @@ router.post('/support-tickets/:id/reply', (req, res) => {
 });
 
 // 9. PLATFORM & PAYMENT SETTINGS
-router.get('/settings', (req, res) => {
+router.get('/settings', async (req, res) => {
   try {
-    const rows = db.prepare('SELECT key, value FROM platform_settings').all();
+    const rows = await db.prepare('SELECT key, value FROM platform_settings').all();
     const settings = {};
     rows.forEach(r => { settings[r.key] = r.value; });
     res.json({ settings });
@@ -1095,20 +1119,20 @@ router.get('/settings', (req, res) => {
   }
 });
 
-router.put('/settings', (req, res) => {
+router.put('/settings', async (req, res) => {
   try {
     const { settings } = req.body; // Object with key-value pairs
     if (!settings || typeof settings !== 'object') {
       return res.status(400).json({ error: 'Invalid settings payload' });
     }
 
-    const updateStmt = db.prepare("INSERT OR REPLACE INTO platform_settings (key, value, updated_at) VALUES (?, ?, datetime('now'))");
+    const updateStmt = db.prepare("INSERT INTO platform_settings (key, value, updated_at) VALUES (?, ?, NOW()) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()");
 
     for (const [key, value] of Object.entries(settings)) {
-      updateStmt.run(key, String(value));
+      await updateStmt.run(key, String(value));
     }
 
-    logAdminAction(req.user, 'PLATFORM_SETTINGS_UPDATED', 'SETTINGS', 'SYSTEM', settings, req);
+    await logAdminAction(req.user, 'PLATFORM_SETTINGS_UPDATED', 'SETTINGS', 'SYSTEM', settings, req);
 
     res.json({ message: 'Platform settings updated successfully!' });
   } catch (error) {
@@ -1118,11 +1142,12 @@ router.put('/settings', (req, res) => {
 });
 
 // 10. AUDIT LOGS
-router.get('/audit-logs', (req, res) => {
+router.get('/audit-logs', async (req, res) => {
   try {
     const { limit = 50, offset = 0 } = req.query;
-    const logs = db.prepare('SELECT * FROM admin_audit_logs ORDER BY created_at DESC LIMIT ? OFFSET ?').all(parseInt(limit, 10), parseInt(offset, 10));
-    const total = db.prepare('SELECT COUNT(*) as count FROM admin_audit_logs').get().count;
+    const logs = await db.prepare('SELECT * FROM admin_audit_logs ORDER BY created_at DESC LIMIT ? OFFSET ?').all(parseInt(limit, 10), parseInt(offset, 10));
+    const totalRes = await db.prepare('SELECT COUNT(*) as count FROM admin_audit_logs').get();
+    const total = parseInt(totalRes?.count || 0);
     res.json({ logs, total });
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch audit logs' });

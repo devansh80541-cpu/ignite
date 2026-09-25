@@ -6,10 +6,10 @@ import { authenticateToken } from '../middleware/auth.js';
 const router = express.Router();
 
 // GET MY TICKETS
-router.get('/my', authenticateToken, (req, res) => {
+router.get('/my', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const tickets = db.prepare('SELECT * FROM support_tickets WHERE user_id = ? ORDER BY created_at DESC').all(userId);
+    const tickets = await db.prepare('SELECT * FROM support_tickets WHERE user_id = ? ORDER BY created_at DESC').all(userId);
     res.json({ tickets });
   } catch (error) {
     console.error('Support tickets fetch error:', error);
@@ -18,7 +18,7 @@ router.get('/my', authenticateToken, (req, res) => {
 });
 
 // SUBMIT NEW TICKET
-router.post('/', authenticateToken, (req, res) => {
+router.post('/', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const { subject, category, description, attachment } = req.body;
@@ -28,7 +28,7 @@ router.post('/', authenticateToken, (req, res) => {
     }
 
     const ticketId = `TICK-${uuidv4().substring(0, 8).toUpperCase()}`;
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO support_tickets (id, user_id, subject, category, description, attachment, status)
       VALUES (?, ?, ?, ?, ?, ?, 'open')
     `).run(ticketId, userId, subject.trim(), category || 'general', description.trim(), attachment || null);

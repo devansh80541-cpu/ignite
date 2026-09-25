@@ -5,20 +5,22 @@ import { authenticateToken } from '../middleware/auth.js';
 const router = express.Router();
 
 // GET USER NOTIFICATIONS
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const notifications = db.prepare(`
+    const notifications = await db.prepare(`
       SELECT * FROM notifications
       WHERE user_id = ?
       ORDER BY created_at DESC
       LIMIT 50
     `).all(userId);
 
-    const unreadCount = db.prepare(`
+    const unreadRes = await db.prepare(`
       SELECT COUNT(*) as count FROM notifications
       WHERE user_id = ? AND is_read = 0
-    `).get(userId).count;
+    `).get(userId);
+
+    const unreadCount = parseInt(unreadRes?.count || 0);
 
     res.json({ notifications, unreadCount });
   } catch (error) {
@@ -28,12 +30,12 @@ router.get('/', authenticateToken, (req, res) => {
 });
 
 // MARK SINGLE NOTIFICATION AS READ
-router.put('/:id/read', authenticateToken, (req, res) => {
+router.put('/:id/read', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
 
-    db.prepare('UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?').run(id, userId);
+    await db.prepare('UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?').run(id, userId);
     res.json({ message: 'Marked as read' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update notification' });
@@ -41,10 +43,10 @@ router.put('/:id/read', authenticateToken, (req, res) => {
 });
 
 // MARK ALL NOTIFICATIONS AS READ
-router.put('/read-all', authenticateToken, (req, res) => {
+router.put('/read-all', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?').run(userId);
+    await db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?').run(userId);
     res.json({ message: 'All notifications marked as read' });
   } catch (error) {
     res.status(500).json({ error: 'Failed to update notifications' });

@@ -23,10 +23,6 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Initialize Database & Seed
-initDatabase();
-seedDatabase().catch(err => console.error('Seed error:', err));
-
 // Middleware
 app.use(cors({
   origin: '*',
@@ -77,10 +73,24 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error', message: err.message });
 });
 
-app.listen(PORT, () => {
-  console.log(`\n=================================================`);
-  console.log(`🚀 IGNITE ESPORTS BACKEND RUNNING ON PORT: ${PORT}`);
-  console.log(`👑 ADMIN LOGIN: /admin/login (User: admin)`);
-  console.log(`🎮 API ENDPOINT: http://localhost:${PORT}/api`);
-  console.log(`=================================================\n`);
-});
+// Initialize Database, Seed, then Start Server
+async function boot() {
+  try {
+    await initDatabase();
+    console.log('✅ PostgreSQL database initialized');
+    await seedDatabase();
+    console.log('✅ Database seeded');
+  } catch (err) {
+    console.error('Database init error:', err);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`\n=================================================`);
+    console.log(`🚀 IGNITE ESPORTS BACKEND RUNNING ON PORT: ${PORT}`);
+    console.log(`👑 ADMIN LOGIN: /admin/login (User: Igniteesports)`);
+    console.log(`🎮 API ENDPOINT: http://localhost:${PORT}/api`);
+    console.log(`=================================================\n`);
+  });
+}
+
+boot();

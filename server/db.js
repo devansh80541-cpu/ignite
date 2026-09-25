@@ -1,25 +1,103 @@
-import Database from 'better-sqlite3';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import fs from 'fs';
+import pg from 'pg';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const { Pool } = pg;
 
-const dataDir = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+// Use DATABASE_URL from Render's PostgreSQL, fallback for local dev
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL ? { rejectUnauthorized: false } : false
+});
+
+// Helper: Convert SQLite ? placeholders to PostgreSQL $1, $2, ... 
+// Also convert datetime('now') to NOW() and other SQLite-isms
+function convertSQL(sql) {
+  let idx = 0;
+  let converted = sql
+    .replace(/datetime\('now'\)/gi, 'NOW()')
+    .replace(/INTEGER DEFAULT 0/gi, 'INTEGER DEFAULT 0')
+    .replace(/REAL DEFAULT/gi, 'DOUBLE PRECISION DEFAULT')
+    .replace(/\?/g, () => `$${++idx}`);
+  return { sql: converted, paramCount: idx };
 }
 
-const dbPath = path.join(dataDir, 'tournament.db');
-const db = new Database(dbPath);
+// Wrapper that mimics better-sqlite3's synchronous .prepare().run/.get/.all API
+// but uses async pg under the hood. Since Express route handlers can be async, 
+// we make these methods return sync-looking results via a proxy pattern.
+// ACTUALLY: we use a simpler approach - make the db object return chainable promises.
 
-// Enable WAL mode for high performance and concurrency
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+const db = {
+  prepare(rawSql) {
+    const { sql } = convertSQL(rawSql);
+    return {
+      run(...params) {
+        return pool.query(sql, params).then(res => ({
+          changes: res.rowCount,
+          lastInsertRowid: null
+        }));
+      },
+      get(...params) {
+        return pool.query(sql, params).then(res => res.rows[0] || null);
+      },
+      all(...params) {
+        return pool.query(sql, params).then(res => res.rows);
+      }
+    };
+  },
+  
+  // Transaction support
+  transaction(fn) {
+    return async (...args) => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        
+        // Create a transaction-scoped db proxy
+        const txDb = {
+          prepare(rawSql) {
+            const { sql } = convertSQL(rawSql);
+            return {
+              async run(...params) {
+                const res = await client.query(sql, params);
+                return { changes: res.rowCount, lastInsertRowid: null };
+              },
+              async get(...params) {
+                const res = await client.query(sql, params);
+                return res.rows[0] || null;
+              },
+              async all(...params) {
+                const res = await client.query(sql, params);
+                return res.rows;
+              }
+            };
+          }
+        };
+        
+        const result = await fn(txDb, ...args);
+        await client.query('COMMIT');
+        return result;
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+      } finally {
+        client.release();
+      }
+    };
+  },
 
-export function initDatabase() {
-  db.exec(`
+  // Direct query for schema operations
+  async exec(sql) {
+    await pool.query(sql);
+  },
+
+  // For direct queries
+  async query(sql, params = []) {
+    const result = await pool.query(sql, params);
+    return result;
+  }
+};
+
+export async function initDatabase() {
+  await pool.query(`
     -- USERS TABLE
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -31,65 +109,63 @@ export function initDatabase() {
       free_fire_uid TEXT,
       in_game_name TEXT,
       avatar TEXT,
-      wallet_balance REAL DEFAULT 0.00,
-      pending_balance REAL DEFAULT 0.00,
-      role TEXT DEFAULT 'player', -- 'player' or 'admin'
+      wallet_balance DOUBLE PRECISION DEFAULT 0.00,
+      pending_balance DOUBLE PRECISION DEFAULT 0.00,
+      role TEXT DEFAULT 'player',
       is_banned INTEGER DEFAULT 0,
-      total_earnings REAL DEFAULT 0.00,
+      total_earnings DOUBLE PRECISION DEFAULT 0.00,
       total_wins INTEGER DEFAULT 0,
       total_matches INTEGER DEFAULT 0,
       total_kills INTEGER DEFAULT 0,
       must_change_password INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
     );
 
     -- TOURNAMENTS TABLE
     CREATE TABLE IF NOT EXISTS tournaments (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      mode TEXT NOT NULL, -- 'battle_royale', 'clash_squad', 'lone_wolf'
-      team_size INTEGER DEFAULT 1, -- 1 for solo/LW, 2 for duo, 4 for squad
-      entry_fee REAL DEFAULT 0.00,
-      prize_pool REAL DEFAULT 0.00,
-      first_prize REAL DEFAULT 0.00,
-      second_prize REAL DEFAULT 0.00,
-      third_prize REAL DEFAULT 0.00,
-      kill_bounty REAL DEFAULT 0.00,
+      mode TEXT NOT NULL,
+      team_size INTEGER DEFAULT 1,
+      entry_fee DOUBLE PRECISION DEFAULT 0.00,
+      prize_pool DOUBLE PRECISION DEFAULT 0.00,
+      first_prize DOUBLE PRECISION DEFAULT 0.00,
+      second_prize DOUBLE PRECISION DEFAULT 0.00,
+      third_prize DOUBLE PRECISION DEFAULT 0.00,
+      kill_bounty DOUBLE PRECISION DEFAULT 0.00,
       max_slots INTEGER DEFAULT 50,
       filled_slots INTEGER DEFAULT 0,
       date TEXT NOT NULL,
       start_time TEXT NOT NULL,
       registration_deadline TEXT,
-      map TEXT DEFAULT 'Bermuda', -- 'Bermuda', 'Purgatory', 'Kalahari', 'Alpine', 'Nexterra'
+      map TEXT DEFAULT 'Bermuda',
       rules TEXT,
-      scoring_rules TEXT, -- JSON string for placement points & kill points
+      scoring_rules TEXT,
       room_id TEXT DEFAULT '',
       room_password TEXT DEFAULT '',
       room_release_time TEXT,
       is_room_released INTEGER DEFAULT 0,
-      status TEXT DEFAULT 'open', -- 'draft', 'open', 'full', 'live', 'completed', 'cancelled'
+      status TEXT DEFAULT 'open',
       banner_img TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
     );
 
     -- TOURNAMENT REGISTRATIONS TABLE
     CREATE TABLE IF NOT EXISTS tournament_registrations (
       id TEXT PRIMARY KEY,
-      tournament_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
+      tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       slot_number INTEGER NOT NULL,
       team_id TEXT,
       team_name TEXT,
       player_ff_uid TEXT,
       player_ign TEXT,
-      entry_fee_paid REAL DEFAULT 0.00,
+      entry_fee_paid DOUBLE PRECISION DEFAULT 0.00,
       payment_transaction_id TEXT,
-      status TEXT DEFAULT 'registered', -- 'registered', 'cancelled', 'refunded'
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT DEFAULT 'registered',
+      created_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(tournament_id, slot_number),
       UNIQUE(tournament_id, user_id)
     );
@@ -97,85 +173,79 @@ export function initDatabase() {
     -- TEAMS TABLE
     CREATE TABLE IF NOT EXISTS teams (
       id TEXT PRIMARY KEY,
-      tournament_id TEXT NOT NULL,
+      tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
-      captain_id TEXT NOT NULL,
+      captain_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       team_size INTEGER DEFAULT 4,
-      members_json TEXT, -- JSON array of {ign, ff_uid, user_id}
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
-      FOREIGN KEY (captain_id) REFERENCES users(id) ON DELETE CASCADE
+      members_json TEXT,
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
-    -- FINANCIAL TRANSACTIONS LEDGER (IMMUTABLE)
+    -- FINANCIAL TRANSACTIONS LEDGER
     CREATE TABLE IF NOT EXISTS transactions (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      type TEXT NOT NULL, -- 'deposit', 'tournament_entry', 'prize_credit', 'cashout', 'refund', 'admin_adjustment'
-      amount REAL NOT NULL,
-      balance_before REAL NOT NULL,
-      balance_after REAL NOT NULL,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      type TEXT NOT NULL,
+      amount DOUBLE PRECISION NOT NULL,
+      balance_before DOUBLE PRECISION NOT NULL,
+      balance_after DOUBLE PRECISION NOT NULL,
       reference_id TEXT,
-      status TEXT DEFAULT 'completed', -- 'completed', 'pending', 'reversed'
+      status TEXT DEFAULT 'completed',
       description TEXT NOT NULL,
       admin_id TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
-    -- DEPOSIT REQUESTS TABLE (ADMIN APPROVAL REQUIRED)
+    -- DEPOSIT REQUESTS TABLE
     CREATE TABLE IF NOT EXISTS deposit_requests (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      amount REAL NOT NULL,
-      payment_method TEXT DEFAULT 'upi', -- 'upi', 'qr', 'bank'
-      transaction_id TEXT NOT NULL, -- UTR / Payment Ref
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      amount DOUBLE PRECISION NOT NULL,
+      payment_method TEXT DEFAULT 'upi',
+      transaction_id TEXT NOT NULL,
       proof_image TEXT,
-      status TEXT DEFAULT 'pending', -- 'pending', 'approved', 'rejected'
+      status TEXT DEFAULT 'pending',
       rejection_reason TEXT,
       reviewed_by TEXT,
-      reviewed_at TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      reviewed_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
-    -- CASHOUT REQUESTS TABLE (ADMIN APPROVAL REQUIRED)
+    -- CASHOUT REQUESTS TABLE
     CREATE TABLE IF NOT EXISTS cashout_requests (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      amount REAL NOT NULL,
-      fee_amount REAL DEFAULT 0.00,
-      net_amount REAL NOT NULL,
-      payout_identifier TEXT NOT NULL, -- UPI ID or Bank details
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      amount DOUBLE PRECISION NOT NULL,
+      fee_amount DOUBLE PRECISION DEFAULT 0.00,
+      net_amount DOUBLE PRECISION NOT NULL,
+      payout_identifier TEXT NOT NULL,
       account_name TEXT NOT NULL,
-      status TEXT DEFAULT 'pending', -- 'pending', 'approved', 'processing', 'paid', 'rejected'
+      status TEXT DEFAULT 'pending',
       admin_note TEXT,
       transaction_reference TEXT,
       reviewed_by TEXT,
-      reviewed_at TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      reviewed_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     -- MATCHES TABLE
     CREATE TABLE IF NOT EXISTS matches (
       id TEXT PRIMARY KEY,
-      tournament_id TEXT NOT NULL,
+      tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
       match_number INTEGER DEFAULT 1,
       round_name TEXT DEFAULT 'Round 1',
       room_id TEXT,
       password TEXT,
       release_time TEXT,
       is_released INTEGER DEFAULT 0,
-      status TEXT DEFAULT 'scheduled', -- 'scheduled', 'live', 'completed'
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
+      status TEXT DEFAULT 'scheduled',
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     -- RESULTS TABLE
     CREATE TABLE IF NOT EXISTS match_results (
       id TEXT PRIMARY KEY,
-      tournament_id TEXT NOT NULL,
+      tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
       match_id TEXT,
       user_id TEXT,
       team_id TEXT,
@@ -186,38 +256,35 @@ export function initDatabase() {
       placement_points INTEGER DEFAULT 0,
       kill_points INTEGER DEFAULT 0,
       total_points INTEGER DEFAULT 0,
-      prize_amount REAL DEFAULT 0.00,
+      prize_amount DOUBLE PRECISION DEFAULT 0.00,
       is_prize_credited INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     -- NOTIFICATIONS TABLE
     CREATE TABLE IF NOT EXISTS notifications (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       title TEXT NOT NULL,
       message TEXT NOT NULL,
-      type TEXT DEFAULT 'system', -- 'deposit', 'cashout', 'tournament', 'match', 'prize', 'system'
+      type TEXT DEFAULT 'system',
       is_read INTEGER DEFAULT 0,
       link TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     -- SUPPORT TICKETS TABLE
     CREATE TABLE IF NOT EXISTS support_tickets (
       id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       subject TEXT NOT NULL,
-      category TEXT DEFAULT 'general', -- 'payment', 'tournament', 'fairplay', 'account', 'other'
+      category TEXT DEFAULT 'general',
       description TEXT NOT NULL,
       attachment TEXT,
-      status TEXT DEFAULT 'open', -- 'open', 'in_progress', 'resolved', 'closed'
+      status TEXT DEFAULT 'open',
       admin_reply TEXT,
-      resolved_at TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      resolved_at TIMESTAMP,
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
     -- ADMIN AUDIT LOGS TABLE
@@ -230,14 +297,14 @@ export function initDatabase() {
       entity_id TEXT,
       details_json TEXT,
       ip_address TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMP DEFAULT NOW()
     );
 
-    -- PLATFORM SETTINGS TABLE (KEY-VALUE)
+    -- PLATFORM SETTINGS TABLE
     CREATE TABLE IF NOT EXISTS platform_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
-      updated_at TEXT DEFAULT (datetime('now'))
+      updated_at TIMESTAMP DEFAULT NOW()
     );
   `);
 }

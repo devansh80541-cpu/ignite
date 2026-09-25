@@ -6,46 +6,51 @@ import { authenticateToken } from '../middleware/auth.js';
 const router = express.Router();
 
 // GET WALLET SUMMARY & STATS
-router.get('/summary', authenticateToken, (req, res) => {
+router.get('/summary', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const user = db.prepare('SELECT wallet_balance, pending_balance, total_earnings FROM users WHERE id = ?').get(userId);
+    const user = await db.prepare('SELECT wallet_balance, pending_balance, total_earnings FROM users WHERE id = ?').get(userId);
 
     // Aggregate totals from transactions
-    const totalDeposited = db.prepare(`
+    const totalDepositedRes = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total
       FROM transactions
       WHERE user_id = ? AND type = 'deposit' AND status = 'completed'
-    `).get(userId).total;
+    `).get(userId);
 
-    const totalWinnings = db.prepare(`
+    const totalWinningsRes = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total
       FROM transactions
       WHERE user_id = ? AND type = 'prize_credit' AND status = 'completed'
-    `).get(userId).total;
+    `).get(userId);
 
-    const totalWithdrawn = db.prepare(`
+    const totalWithdrawnRes = await db.prepare(`
       SELECT COALESCE(ABS(SUM(amount)), 0) as total
       FROM transactions
       WHERE user_id = ? AND type = 'cashout' AND status = 'completed'
-    `).get(userId).total;
+    `).get(userId);
 
-    const pendingDeposits = db.prepare(`
+    const pendingDepositsRes = await db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total
       FROM deposit_requests
       WHERE user_id = ? AND status = 'pending'
-    `).get(userId).total;
+    `).get(userId);
+
+    const totalDeposited = parseFloat(totalDepositedRes?.total || 0);
+    const totalWinnings = parseFloat(totalWinningsRes?.total || 0);
+    const totalWithdrawn = parseFloat(totalWithdrawnRes?.total || 0);
+    const pendingDeposits = parseFloat(pendingDepositsRes?.total || 0);
 
     // Fetch platform payment settings (UPI, QR, Min/Max)
-    const settingsRows = db.prepare('SELECT key, value FROM platform_settings').all();
+    const settingsRows = await db.prepare('SELECT key, value FROM platform_settings').all();
     const settings = {};
     settingsRows.forEach(r => { settings[r.key] = r.value; });
 
     res.json({
-      availableBalance: user.wallet_balance || 0,
-      pendingBalance: user.pending_balance || 0,
+      availableBalance: parseFloat(user?.wallet_balance || 0),
+      pendingBalance: parseFloat(user?.pending_balance || 0),
       totalDeposited,
-      totalWinnings: totalWinnings || user.total_earnings || 0,
+      totalWinnings: totalWinnings || parseFloat(user?.total_earnings || 0),
       totalWithdrawn,
       pendingDeposits,
       settings: {
@@ -66,7 +71,7 @@ router.get('/summary', authenticateToken, (req, res) => {
 });
 
 // SUBMIT ADD MONEY / DEPOSIT REQUEST (REQUIRES MANUAL ADMIN APPROVAL)
-router.post('/deposit', authenticateToken, (req, res) => {
+router.post('/deposit', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const { amount, paymentMethod, transactionId, proofImage } = req.body;
@@ -77,8 +82,8 @@ router.post('/deposit', authenticateToken, (req, res) => {
     }
 
     // Check min / max settings
-    const minDepRow = db.prepare("SELECT value FROM platform_settings WHERE key = 'min_deposit'").get();
-    const maxDepRow = db.prepare("SELECT value FROM platform_settings WHERE key = 'max_deposit'").get();
+    const minDepRow = await db.prepare("SELECT value FROM platform_settings WHERE key = 'min_deposit'").get();
+    const maxDepRow = await db.prepare("SELECT value FROM platform_settings WHERE key = 'max_deposit'").get();
     const minDep = minDepRow ? parseFloat(minDepRow.value) : 50;
     const maxDep = maxDepRow ? parseFloat(maxDepRow.value) : 10000;
 
@@ -96,19 +101,19 @@ router.post('/deposit', authenticateToken, (req, res) => {
     const cleanUtr = transactionId.trim();
 
     // Check if this UTR has already been submitted
-    const existingReq = db.prepare('SELECT id, status FROM deposit_requests WHERE transaction_id = ?').get(cleanUtr);
+    const existingReq = await db.prepare('SELECT id, status FROM deposit_requests WHERE transaction_id = ?').get(cleanUtr);
     if (existingReq) {
       return res.status(400).json({ error: `This UTR (${cleanUtr}) has already been submitted (Status: ${existingReq.status.toUpperCase()}).` });
     }
 
     const requestId = uuidv4();
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO deposit_requests (id, user_id, amount, payment_method, transaction_id, proof_image, status)
       VALUES (?, ?, ?, ?, ?, ?, 'pending')
     `).run(requestId, userId, numAmount, paymentMethod || 'upi', cleanUtr, proofImage || null);
 
     // Create Notification
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
       VALUES (?, ?, ?, ?, 'deposit', 0, '/wallet')
     `).run(
@@ -134,7 +139,7 @@ router.post('/deposit', authenticateToken, (req, res) => {
 });
 
 // SUBMIT CASHOUT / WITHDRAWAL REQUEST
-router.post('/cashout', authenticateToken, (req, res) => {
+router.post('/cashout', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const { amount, payoutIdentifier, accountName } = req.body;
@@ -153,11 +158,11 @@ router.post('/cashout', authenticateToken, (req, res) => {
     }
 
     // ATOMIC CASHOUT REQUEST TRANSACTION
-    const cashoutTx = db.transaction(() => {
-      const user = db.prepare('SELECT wallet_balance, pending_balance FROM users WHERE id = ?').get(userId);
+    const cashoutTx = db.transaction(async (txDb) => {
+      const user = await txDb.prepare('SELECT wallet_balance, pending_balance FROM users WHERE id = ?').get(userId);
 
-      const minCashRow = db.prepare("SELECT value FROM platform_settings WHERE key = 'min_cashout'").get();
-      const feeRow = db.prepare("SELECT value FROM platform_settings WHERE key = 'cashout_fee_percent'").get();
+      const minCashRow = await txDb.prepare("SELECT value FROM platform_settings WHERE key = 'min_cashout'").get();
+      const feeRow = await txDb.prepare("SELECT value FROM platform_settings WHERE key = 'cashout_fee_percent'").get();
       const minCash = minCashRow ? parseFloat(minCashRow.value) : 100;
       const feePercent = feeRow ? parseFloat(feeRow.value) : 2;
 
@@ -176,16 +181,16 @@ router.post('/cashout', authenticateToken, (req, res) => {
       const newAvailable = user.wallet_balance - numAmount;
       const newPending = (user.pending_balance || 0) + numAmount;
 
-      db.prepare("UPDATE users SET wallet_balance = ?, pending_balance = ?, updated_at = datetime('now') WHERE id = ?")
+      await txDb.prepare("UPDATE users SET wallet_balance = ?, pending_balance = ?, updated_at = NOW() WHERE id = ?")
         .run(newAvailable, newPending, userId);
 
       const requestId = uuidv4();
-      db.prepare(`
+      await txDb.prepare(`
         INSERT INTO cashout_requests (id, user_id, amount, fee_amount, net_amount, payout_identifier, account_name, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
       `).run(requestId, userId, numAmount, feeAmount, netAmount, payoutIdentifier.trim(), accountName.trim());
 
-      db.prepare(`
+      await txDb.prepare(`
         INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
         VALUES (?, ?, ?, ?, 'cashout', 0, '/wallet')
       `).run(
@@ -204,7 +209,7 @@ router.post('/cashout', authenticateToken, (req, res) => {
       };
     });
 
-    const result = cashoutTx();
+    const result = await cashoutTx();
 
     res.status(201).json({
       message: 'Cashout request placed successfully. Admin will process your payout.',
@@ -219,12 +224,12 @@ router.post('/cashout', authenticateToken, (req, res) => {
 });
 
 // GET USER'S DEPOSITS AND CASHOUTS LIST
-router.get('/requests', authenticateToken, (req, res) => {
+router.get('/requests', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const deposits = db.prepare('SELECT * FROM deposit_requests WHERE user_id = ? ORDER BY created_at DESC').all(userId);
-    const cashouts = db.prepare('SELECT * FROM cashout_requests WHERE user_id = ? ORDER BY created_at DESC').all(userId);
+    const deposits = await db.prepare('SELECT * FROM deposit_requests WHERE user_id = ? ORDER BY created_at DESC').all(userId);
+    const cashouts = await db.prepare('SELECT * FROM cashout_requests WHERE user_id = ? ORDER BY created_at DESC').all(userId);
 
     res.json({ deposits, cashouts });
   } catch (error) {
@@ -234,7 +239,7 @@ router.get('/requests', authenticateToken, (req, res) => {
 });
 
 // GET IMMUTABLE TRANSACTION HISTORY WITH FILTERING & SEARCH
-router.get('/transactions', authenticateToken, (req, res) => {
+router.get('/transactions', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
     const { type, search, limit = 50, offset = 0 } = req.query;
@@ -255,11 +260,12 @@ router.get('/transactions', authenticateToken, (req, res) => {
     query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
     params.push(parseInt(limit, 10), parseInt(offset, 10));
 
-    const transactions = db.prepare(query).all(...params);
+    const transactions = await db.prepare(query).all(...params);
 
     const totalCountQuery = 'SELECT COUNT(*) as count FROM transactions WHERE user_id = ?' + (type && type !== 'all' ? ' AND type = ?' : '');
     const countParams = type && type !== 'all' ? [userId, type] : [userId];
-    const totalCount = db.prepare(totalCountQuery).get(...countParams).count;
+    const totalCountRes = await db.prepare(totalCountQuery).get(...countParams);
+    const totalCount = parseInt(totalCountRes?.count || 0);
 
     res.json({
       transactions,

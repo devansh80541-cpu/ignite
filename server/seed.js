@@ -2,9 +2,10 @@ import bcrypt from 'bcryptjs';
 import db, { initDatabase } from './db.js';
 
 export async function seedDatabase() {
-  initDatabase();
+  await initDatabase();
 
-  const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+  const result = await db.prepare('SELECT COUNT(*) as count FROM users').get();
+  const userCount = result.count;
   if (userCount > 0) {
     console.log('Database already populated. Skipping seed.');
     return;
@@ -15,7 +16,7 @@ export async function seedDatabase() {
   const adminPasswordHash = await bcrypt.hash('IgniteXsolofx7', 10);
 
   // Admin account only — zero balance, no demo data
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO users (id, name, username, email, password_hash, phone, free_fire_uid, in_game_name, wallet_balance, pending_balance, role, is_banned, must_change_password)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
@@ -56,7 +57,7 @@ export async function seedDatabase() {
   ];
 
   for (const [key, val] of settings) {
-    db.prepare(`INSERT OR REPLACE INTO platform_settings (key, value) VALUES (?, ?)`).run(key, val);
+    await db.prepare(`INSERT INTO platform_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`).run(key, val);
   }
 
   console.log('✅ Fresh database ready! Admin account created. No demo data.');

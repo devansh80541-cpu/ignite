@@ -7,7 +7,7 @@ import { authenticateToken } from '../middleware/auth.js';
 const router = express.Router();
 
 // LIST ALL TOURNAMENTS (Public / Player)
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { mode, status, search } = req.query;
     let query = 'SELECT * FROM tournaments WHERE 1=1';
@@ -32,7 +32,7 @@ router.get('/', (req, res) => {
 
     query += " ORDER BY CASE status WHEN 'live' THEN 1 WHEN 'open' THEN 2 WHEN 'full' THEN 3 ELSE 4 END, date ASC, start_time ASC";
 
-    const tournaments = db.prepare(query).all(...params);
+    const tournaments = await db.prepare(query).all(...params);
 
     // Filter sensitive room details from list
     const safeTournaments = tournaments.map(t => {
@@ -52,7 +52,7 @@ router.get('/', (req, res) => {
 });
 
 // GET SINGLE TOURNAMENT DETAILS + SLOTS + REGISTRATION STATUS
-router.get('/:id', (req, res) => {
+router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const authHeader = req.headers['authorization'];
@@ -68,13 +68,13 @@ router.get('/:id', (req, res) => {
       }
     }
 
-    const tournament = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id);
+    const tournament = await db.prepare('SELECT * FROM tournaments WHERE id = ?').get(id);
     if (!tournament) {
       return res.status(404).json({ error: 'Tournament not found' });
     }
 
     // Get all registered slots
-    const registrations = db.prepare(`
+    const registrations = await db.prepare(`
       SELECT tr.*, u.username, u.name, u.avatar
       FROM tournament_registrations tr
       LEFT JOIN users u ON tr.user_id = u.id
@@ -121,18 +121,20 @@ router.get('/:id', (req, res) => {
     }
 
     // Teams for clash squad
-    const teams = db.prepare(`
+    const rawTeams = await db.prepare(`
       SELECT t.*, u.username as captain_username, u.in_game_name as captain_ign
       FROM teams t
       LEFT JOIN users u ON t.captain_id = u.id
       WHERE t.tournament_id = ?
-    `).all(id).map(team => ({
+    `).all(id);
+
+    const teams = rawTeams.map(team => ({
       ...team,
       members: team.members_json ? JSON.parse(team.members_json) : []
     }));
 
     // Match Results if completed
-    const results = db.prepare(`
+    const results = await db.prepare(`
       SELECT * FROM match_results WHERE tournament_id = ? ORDER BY position ASC, total_points DESC
     `).all(id);
 
@@ -161,17 +163,17 @@ router.get('/:id', (req, res) => {
 });
 
 // JOIN TOURNAMENT / RESERVE A SLOT (ATOMIC SERVER-SIDE MONEY TRANSACTION)
-router.post('/:id/join', authenticateToken, (req, res) => {
+router.post('/:id/join', authenticateToken, async (req, res) => {
   const tournamentId = req.params.id;
   const userId = req.user.id;
   const { slotNumber, inGameName, freeFireUid, teamName, teamMembers } = req.body;
 
   try {
     // ATOMIC DATABASE TRANSACTION
-    const joinTx = db.transaction(() => {
+    const joinTx = db.transaction(async (txDb) => {
       // 1. Fetch fresh user and tournament records inside transaction
-      const user = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
-      const tournament = db.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId);
+      const user = await txDb.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+      const tournament = await txDb.prepare('SELECT * FROM tournaments WHERE id = ?').get(tournamentId);
 
       if (!tournament) {
         throw new Error('Tournament not found');
@@ -182,7 +184,7 @@ router.post('/:id/join', authenticateToken, (req, res) => {
       }
 
       // Check if user is already registered in this tournament
-      const existingReg = db.prepare('SELECT * FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?').get(tournamentId, userId);
+      const existingReg = await txDb.prepare('SELECT * FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?').get(tournamentId, userId);
       if (existingReg) {
         throw new Error('You are already registered for this tournament.');
       }
@@ -196,7 +198,8 @@ router.post('/:id/join', authenticateToken, (req, res) => {
 
       // Determine slot
       let targetSlot = slotNumber ? parseInt(slotNumber, 10) : null;
-      const occupiedSlots = db.prepare("SELECT slot_number FROM tournament_registrations WHERE tournament_id = ? AND status = 'registered'").all(tournamentId).map(s => s.slot_number);
+      const occupiedSlotsRes = await txDb.prepare("SELECT slot_number FROM tournament_registrations WHERE tournament_id = ? AND status = 'registered'").all(tournamentId);
+      const occupiedSlots = occupiedSlotsRes.map(s => s.slot_number);
 
       if (targetSlot) {
         if (targetSlot < 1 || targetSlot > tournament.max_slots) {
@@ -227,10 +230,10 @@ router.post('/:id/join', authenticateToken, (req, res) => {
       const transactionId = `tx-entry-${uuidv4().substring(0, 8)}`;
 
       if (entryFee > 0) {
-        db.prepare("UPDATE users SET wallet_balance = ?, total_matches = total_matches + 1, updated_at = datetime('now') WHERE id = ?")
+        await txDb.prepare("UPDATE users SET wallet_balance = ?, total_matches = total_matches + 1, updated_at = NOW() WHERE id = ?")
           .run(balanceAfter, userId);
 
-        db.prepare(`
+        await txDb.prepare(`
           INSERT INTO transactions (id, user_id, type, amount, balance_before, balance_after, reference_id, status, description)
           VALUES (?, ?, 'tournament_entry', ?, ?, ?, ?, 'completed', ?)
         `).run(
@@ -243,7 +246,7 @@ router.post('/:id/join', authenticateToken, (req, res) => {
           `Entry Fee for ${tournament.name} (Slot ${targetSlot < 10 ? '0' + targetSlot : targetSlot})`
         );
       } else {
-        db.prepare("UPDATE users SET total_matches = total_matches + 1, updated_at = datetime('now') WHERE id = ?")
+        await txDb.prepare("UPDATE users SET total_matches = total_matches + 1, updated_at = NOW() WHERE id = ?")
           .run(userId);
       }
 
@@ -251,7 +254,7 @@ router.post('/:id/join', authenticateToken, (req, res) => {
       let teamId = null;
       if (tournament.mode === 'clash_squad' && teamName) {
         teamId = uuidv4();
-        db.prepare(`
+        await txDb.prepare(`
           INSERT INTO teams (id, tournament_id, name, captain_id, team_size, members_json)
           VALUES (?, ?, ?, ?, ?, ?)
         `).run(teamId, tournamentId, teamName, userId, tournament.team_size || 4, JSON.stringify(teamMembers || [{ ign, ffUid }]));
@@ -259,7 +262,7 @@ router.post('/:id/join', authenticateToken, (req, res) => {
 
       // 3. Create Tournament Registration
       const regId = uuidv4();
-      db.prepare(`
+      await txDb.prepare(`
         INSERT INTO tournament_registrations (id, tournament_id, user_id, slot_number, team_id, team_name, player_ff_uid, player_ign, entry_fee_paid, payment_transaction_id, status)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'registered')
       `).run(
@@ -279,11 +282,11 @@ router.post('/:id/join', authenticateToken, (req, res) => {
       const newFilledCount = occupiedSlots.length + 1;
       const newStatus = newFilledCount >= tournament.max_slots ? 'full' : 'open';
 
-      db.prepare("UPDATE tournaments SET filled_slots = ?, status = ?, updated_at = datetime('now') WHERE id = ?")
+      await txDb.prepare("UPDATE tournaments SET filled_slots = ?, status = ?, updated_at = NOW() WHERE id = ?")
         .run(newFilledCount, newStatus, tournamentId);
 
       // 5. Send Notification
-      db.prepare(`
+      await txDb.prepare(`
         INSERT INTO notifications (id, user_id, title, message, type, is_read, link)
         VALUES (?, ?, ?, ?, 'tournament', 0, ?)
       `).run(
@@ -302,7 +305,7 @@ router.post('/:id/join', authenticateToken, (req, res) => {
       };
     });
 
-    const result = joinTx();
+    const result = await joinTx();
 
     res.json({
       message: `Successfully registered for slot ${result.slotNumber < 10 ? '0' + result.slotNumber : result.slotNumber}!`,
@@ -316,11 +319,11 @@ router.post('/:id/join', authenticateToken, (req, res) => {
 });
 
 // GET USER'S REGISTERED TOURNAMENTS (Upcoming, Live, Completed)
-router.get('/my/list', authenticateToken, (req, res) => {
+router.get('/my/list', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const myTournaments = db.prepare(`
+    const myTournaments = await db.prepare(`
       SELECT 
         t.*,
         tr.slot_number,
