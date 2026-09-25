@@ -314,14 +314,26 @@ export default function TournamentDetail({ tournamentId, onBack, onNavigate }) {
           <div className="tactical-card" style={{ padding: '20px' }}>
             <div className="font-heading" style={{ fontSize: '0.75rem', color: 'var(--prize-gold)', marginBottom: '10px' }}>PRIZE DISTRIBUTION</div>
             <div className="font-hud" style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '0.85rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)' }}>
-                <span>1ST PLACE</span>
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)', borderLeft: '3px solid var(--prize-gold)' }}>
+                <span>🥇 1ST PLACE</span>
                 <strong style={{ color: 'var(--prize-gold)' }}>₹{Number(tournament.first_prize || (tournament.prize_pool * 0.5)).toLocaleString()}</strong>
               </div>
               {Number(tournament.second_prize) > 0 && (
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)' }}>
-                  <span>2ND PLACE</span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)', borderLeft: '3px solid #C0C0C0' }}>
+                  <span>🥈 2ND PLACE</span>
                   <strong style={{ color: 'var(--text-main)' }}>₹{Number(tournament.second_prize).toLocaleString()}</strong>
+                </div>
+              )}
+              {Number(tournament.third_prize) > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)', borderLeft: '3px solid #CD7F32' }}>
+                  <span>🥉 3RD PLACE</span>
+                  <strong style={{ color: '#CD7F32' }}>₹{Number(tournament.third_prize).toLocaleString()}</strong>
+                </div>
+              )}
+              {Number(tournament.kill_bounty) > 0 && (
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px', background: 'var(--bg-secondary)', borderRadius: 'var(--radius-sm)', borderLeft: '3px solid var(--primary)' }}>
+                  <span>💀 PER KILL</span>
+                  <strong style={{ color: 'var(--primary)' }}>₹{Number(tournament.kill_bounty).toLocaleString()}</strong>
                 </div>
               )}
             </div>

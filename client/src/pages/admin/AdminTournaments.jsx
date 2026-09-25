@@ -422,6 +422,10 @@ export default function AdminTournaments() {
                   <input type="number" step="0.01" value={secondPrize} onChange={(e) => setSecondPrize(e.target.value)} className="input-dark" />
                 </div>
                 <div>
+                  <label style={{ display: 'block', fontSize: '0.75rem', color: '#CD7F32', marginBottom: '4px' }}>3rd Place (₹)</label>
+                  <input type="number" step="0.01" value={thirdPrize} onChange={(e) => setThirdPrize(e.target.value)} className="input-dark" />
+                </div>
+                <div>
                   <label style={{ display: 'block', fontSize: '0.75rem', color: '#ff5247', marginBottom: '4px' }}>Kill Bounty (₹)</label>
                   <input type="number" step="0.01" value={killBounty} onChange={(e) => setKillBounty(e.target.value)} className="input-dark" />
                 </div>
