@@ -78,10 +78,16 @@ async function boot() {
   try {
     await initDatabase();
     console.log('✅ PostgreSQL database initialized');
+  } catch (err) {
+    console.error('❌ FATAL: Database initialization failed:', err.message);
+    process.exit(1);
+  }
+
+  try {
     await seedDatabase();
     console.log('✅ Database seeded');
   } catch (err) {
-    console.error('Database init error:', err);
+    console.error('⚠️ Seed warning (non-fatal):', err.message);
   }
 
   app.listen(PORT, () => {
@@ -94,3 +100,4 @@ async function boot() {
 }
 
 boot();
+

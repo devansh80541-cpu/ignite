@@ -97,8 +97,10 @@ const db = {
 };
 
 export async function initDatabase() {
+  // PostgreSQL requires each statement to be run separately
+  // (no multi-statement support in pg driver by default)
+
   await pool.query(`
-    -- USERS TABLE
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -120,9 +122,10 @@ export async function initDatabase() {
       must_change_password INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
-    );
+    )
+  `);
 
-    -- TOURNAMENTS TABLE
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS tournaments (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -150,9 +153,10 @@ export async function initDatabase() {
       banner_img TEXT,
       created_at TIMESTAMP DEFAULT NOW(),
       updated_at TIMESTAMP DEFAULT NOW()
-    );
+    )
+  `);
 
-    -- TOURNAMENT REGISTRATIONS TABLE
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS tournament_registrations (
       id TEXT PRIMARY KEY,
       tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
@@ -168,9 +172,10 @@ export async function initDatabase() {
       created_at TIMESTAMP DEFAULT NOW(),
       UNIQUE(tournament_id, slot_number),
       UNIQUE(tournament_id, user_id)
-    );
+    )
+  `);
 
-    -- TEAMS TABLE
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS teams (
       id TEXT PRIMARY KEY,
       tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
@@ -179,9 +184,10 @@ export async function initDatabase() {
       team_size INTEGER DEFAULT 4,
       members_json TEXT,
       created_at TIMESTAMP DEFAULT NOW()
-    );
+    )
+  `);
 
-    -- FINANCIAL TRANSACTIONS LEDGER
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS transactions (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -194,9 +200,10 @@ export async function initDatabase() {
       description TEXT NOT NULL,
       admin_id TEXT,
       created_at TIMESTAMP DEFAULT NOW()
-    );
+    )
+  `);
 
-    -- DEPOSIT REQUESTS TABLE
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS deposit_requests (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -209,9 +216,10 @@ export async function initDatabase() {
       reviewed_by TEXT,
       reviewed_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW()
-    );
+    )
+  `);
 
-    -- CASHOUT REQUESTS TABLE
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS cashout_requests (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -226,9 +234,10 @@ export async function initDatabase() {
       reviewed_by TEXT,
       reviewed_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW()
-    );
+    )
+  `);
 
-    -- MATCHES TABLE
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS matches (
       id TEXT PRIMARY KEY,
       tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
@@ -240,9 +249,10 @@ export async function initDatabase() {
       is_released INTEGER DEFAULT 0,
       status TEXT DEFAULT 'scheduled',
       created_at TIMESTAMP DEFAULT NOW()
-    );
+    )
+  `);
 
-    -- RESULTS TABLE
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS match_results (
       id TEXT PRIMARY KEY,
       tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
@@ -259,9 +269,10 @@ export async function initDatabase() {
       prize_amount DOUBLE PRECISION DEFAULT 0.00,
       is_prize_credited INTEGER DEFAULT 0,
       created_at TIMESTAMP DEFAULT NOW()
-    );
+    )
+  `);
 
-    -- NOTIFICATIONS TABLE
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS notifications (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -271,9 +282,10 @@ export async function initDatabase() {
       is_read INTEGER DEFAULT 0,
       link TEXT,
       created_at TIMESTAMP DEFAULT NOW()
-    );
+    )
+  `);
 
-    -- SUPPORT TICKETS TABLE
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS support_tickets (
       id TEXT PRIMARY KEY,
       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -285,9 +297,10 @@ export async function initDatabase() {
       admin_reply TEXT,
       resolved_at TIMESTAMP,
       created_at TIMESTAMP DEFAULT NOW()
-    );
+    )
+  `);
 
-    -- ADMIN AUDIT LOGS TABLE
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS admin_audit_logs (
       id TEXT PRIMARY KEY,
       admin_id TEXT,
@@ -298,14 +311,15 @@ export async function initDatabase() {
       details_json TEXT,
       ip_address TEXT,
       created_at TIMESTAMP DEFAULT NOW()
-    );
+    )
+  `);
 
-    -- PLATFORM SETTINGS TABLE
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS platform_settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
       updated_at TIMESTAMP DEFAULT NOW()
-    );
+    )
   `);
 }
 
