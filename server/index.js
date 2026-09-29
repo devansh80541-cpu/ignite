@@ -14,6 +14,7 @@ import notificationRoutes from './routes/notifications.js';
 import supportRoutes from './routes/support.js';
 import adminRoutes from './routes/admin.js';
 import settingsRoutes from './routes/settings.js';
+import healthRoutes from './routes/health.js';
 
 dotenv.config();
 
@@ -49,11 +50,10 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/health', healthRoutes);
 
-// Health Check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
-});
+// Health Check (Root)
+app.use('/health', healthRoutes);
 
 // Serve frontend in production if built
 const clientDist = path.join(__dirname, '..', 'client', 'dist');
